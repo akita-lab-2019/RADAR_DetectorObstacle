@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 
 #include <wiringPi.h>
 #include <wiringSerial.h>
@@ -50,13 +51,22 @@ int main(void)
     }
 
     // ログファイルの生成処理
-    char filename[3][64];
+    char dir_name[64];
+    char filename[USE_SENSOR_NUM][64];
     char time_str[32] = "00_00_00_00_00";
     time_t t = time(NULL);
     strftime(time_str, sizeof(time_str), "%m_%d_%H_%M_%S", localtime(&t));
+    sprintf(dir_name, "log/%s", time_str);
+    // 保存フォルダの生成
+    if (mkdir(dir_name, 0777) != 0)
+    {
+        printf("フォルダ作成に失敗しました。\n");
+        return EXIT_FAILURE;
+    }
     for (int i = 0; i < USE_SENSOR_NUM; i++)
     {
-        sprintf(filename[i], "log/%s_%d.csv", time_str, use_sensor_id[i]);
+        // ファイルの生成
+        sprintf(filename[i], "%s/%d.csv", dir_name, use_sensor_id[i]);
         if ((fp[i] = fopen(filename[i], "w")) == NULL)
         {
             fprintf(stderr, "ファイルのオープンに失敗しました.\n");
@@ -73,8 +83,8 @@ int main(void)
         return EXIT_FAILURE;
 
     // 各種設定
-    acc_service_configuration_t envelope_configuration[3];
-    acc_service_handle_t handle[3];
+    acc_service_configuration_t envelope_configuration[USE_SENSOR_NUM];
+    acc_service_handle_t handle[USE_SENSOR_NUM];
     for (int i = 0; i < USE_SENSOR_NUM; i++)
     {
         envelope_configuration[i] = acc_service_envelope_configuration_create();
@@ -89,7 +99,7 @@ int main(void)
     }
 
     // ブロッキングコールでエンベロープを実行する
-    acc_service_status_t service_status[3];
+    acc_service_status_t service_status[USE_SENSOR_NUM];
     while (true)
     {
         service_status[0] = execute_envelope_with_blocking_calls(0, handle[0]);
@@ -240,7 +250,7 @@ void configure_sweeps(acc_service_configuration_t envelope_configuration, int id
     else
     {
         float start_m = 0.1f;
-        float length_m = 1.5f;
+        float length_m = 1.0f;
         float update_rate_hz = 100;
         acc_sweep_configuration_sensor_set(sweep_configuration, id);
         acc_sweep_configuration_requested_start_set(sweep_configuration, start_m);
