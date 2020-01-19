@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <time.h>
+#include <sys/time.h>
 
 #include <wiringPi.h>
 #include <wiringSerial.h>
@@ -21,7 +23,7 @@
 
 #define USE_SENSOR_NUM 3                       // 使用するセンサの数
 int use_sensor_id[USE_SENSOR_NUM] = {1, 3, 4}; // 使用するセンサのIDリスト
-const double period_sec = 0.05;                // 実行周期[s]
+const double period_sec = 0.005;               // 実行周期[s]
 
 double distance_to_object[3] = {0}; // 物体までの距離[m]
 int inited = 0;
@@ -34,6 +36,7 @@ static void configure_sweeps(acc_service_configuration_t envelope_configuration,
 static acc_hal_t hal;
 
 FILE *fp[3];
+FILE *fp_g;
 
 int main(void)
 {
@@ -67,11 +70,20 @@ int main(void)
     {
         // ファイルの生成
         sprintf(filename[i], "%s/%d.csv", dir_name, use_sensor_id[i]);
-        if ((fp[i] = fopen(filename[i], "w")) == NULL)
+        f if ((fp[i] = fopen(filename[i], "w")) == NULL)
         {
             fprintf(stderr, "ファイルのオープンに失敗しました.\n");
             return EXIT_FAILURE;
         }
+    }
+
+    // ファイルの生成
+    char gyro_file_name[128];
+    sprintf(gyro_file_name, "%s/gyro.csv", dir_name);
+    if ((fp_g = fopen(gyro_file_name, "w")) == NULL)
+    {
+        fprintf(stderr, "ファイルのオープンに失敗しました.\n");
+        return EXIT_FAILURE;
     }
 
     // RADARのドライバを初期化
@@ -98,25 +110,60 @@ int main(void)
             return EXIT_FAILURE;
     }
 
+    clock_t system_start_time = clock();
+    long loop_num = 0;
+
     // ブロッキングコールでエンベロープを実行する
     acc_service_status_t service_status[USE_SENSOR_NUM];
     while (true)
     {
+        loop_num++;
+        count++;
+
+        // cls
+        printf("\033[2J");
+        printf("\033[0;0H");
+
+        double now_time = (double)(clock() - system_start_time) / CLOCKS_PER_SEC;
+        printf("time: %f\r\n", now_time);
+
         service_status[0] = execute_envelope_with_blocking_calls(0, handle[0]);
         service_status[1] = execute_envelope_with_blocking_calls(1, handle[1]);
         service_status[2] = execute_envelope_with_blocking_calls(2, handle[2]);
-        count++;
 
-        if (distance_to_object[0] < 0.1)
+        if (distance_to_object[0] != 0)
         {
-            serialPutchar(fd, 1);
+            if (distance_to_object[0] < 0.15)
+            {
+                serialPutchar(fd, 1);
+            }
+            else
+            {
+                serialPutchar(fd, 0);
+            }
         }
         else
         {
             serialPutchar(fd, 0);
         }
 
-        hal.os.sleep_us(period_sec * 1000000);
+        int get_char = serialGetchar(fd);
+        if (get_char != -1)
+        {
+            printf("recive : %d\n", get_char);
+            fprintf(fp_g, "\n%f", now_time);
+            fprintf(fp_g, ",%d", get_char);
+        }
+        else
+        {
+            printf("no data\n");
+        }
+
+        while (true)
+        {
+            if ((double)((clock() - system_start_time) / CLOCKS_PER_SEC) > loop_num * period_sec)
+                break;
+        }
     }
 
     if (service_status[0] != ACC_SERVICE_STATUS_OK)
@@ -196,6 +243,12 @@ acc_service_status_t execute_envelope_with_blocking_calls(int sensor_num, acc_se
         // この関数は，次のスイープがセンサーから到着し，包絡線データが「data」配列にコピーされるまでブロックする
         service_status = acc_service_envelope_get_next(handle, data, data_len, &result_info);
 
+        // 減衰補正
+        // for (int i = 0; i < data_len; i++)
+        // {
+        //     data[i] = data[i] + 0.5 * data[i] * (i * index_to_meter);
+        // }
+
         double max_data = 0;
         int max_data_index = 0;
         for (int i = 0; i < data_len; i++)
@@ -207,8 +260,20 @@ acc_service_status_t execute_envelope_with_blocking_calls(int sensor_num, acc_se
             }
         }
 
-        distance_to_object[sensor_num] = index_to_meter * max_data_index;
-        printf("%f", distance_to_object[sensor_num]);
+        if (max_data > 1000)
+        {
+            distance_to_object[sensor_num] = index_to_meter * max_data_index;
+        }
+        else
+        {
+            // 強度が閾値より低いときは非検知扱いにする
+            distance_to_object[sensor_num] = 0;
+        }
+
+        if (sensor_num == 0)
+        {
+            printf("[%f, %f]\n", max_data, distance_to_object[sensor_num]);
+        }
 
         if (service_status == ACC_SERVICE_STATUS_OK)
         {
@@ -224,9 +289,6 @@ acc_service_status_t execute_envelope_with_blocking_calls(int sensor_num, acc_se
         {
             printf("エンベロープデータが正しく取得されませんでした\n");
         }
-
-        // 測定を終了
-        service_status = acc_service_deactivate(handle);
     }
     else
     {
@@ -250,7 +312,7 @@ void configure_sweeps(acc_service_configuration_t envelope_configuration, int id
     else
     {
         float start_m = 0.1f;
-        float length_m = 1.0f;
+        float length_m = 0.4f;
         float update_rate_hz = 100;
         acc_sweep_configuration_sensor_set(sweep_configuration, id);
         acc_sweep_configuration_requested_start_set(sweep_configuration, start_m);
