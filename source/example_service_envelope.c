@@ -21,9 +21,10 @@
 
 #include "acc_version.h"
 
-#define USE_SENSOR_NUM 3                       // 使用するセンサの数
-int use_sensor_id[USE_SENSOR_NUM] = {1, 3, 4}; // 使用するセンサのIDリスト
-const double period_sec = 0.005;               // 実行周期[s]
+#define REQ_DATA_NUM 128                    // 取得したいデータ数
+#define USE_SENSOR_NUM 2                    // 使用するセンサの数
+int use_sensor_id[USE_SENSOR_NUM] = {1, 3}; // 使用するセンサのIDリスト
+const double period_sec = 0.005;            // 実行周期[s]
 
 double distance_to_object[3] = {0}; // 物体までの距離[m]
 int inited = 0;
@@ -34,6 +35,8 @@ static acc_service_handle_t createHandle(acc_service_configuration_t envelope_co
 void writeHeader(acc_service_handle_t handle);
 static void configure_sweeps(acc_service_configuration_t envelope_configuration, int id);
 static acc_hal_t hal;
+
+double processed_data[1000] = {0};
 
 FILE *fp[3];
 FILE *fp_g;
@@ -70,7 +73,7 @@ int main(void)
     {
         // ファイルの生成
         sprintf(filename[i], "%s/%d.csv", dir_name, use_sensor_id[i]);
-        f if ((fp[i] = fopen(filename[i], "w")) == NULL)
+        if ((fp[i] = fopen(filename[i], "w")) == NULL)
         {
             fprintf(stderr, "ファイルのオープンに失敗しました.\n");
             return EXIT_FAILURE;
@@ -103,6 +106,9 @@ int main(void)
         if (envelope_configuration[i] == NULL)
             return EXIT_FAILURE;
 
+        // 移動平均フィルタをなくす
+        acc_service_envelope_running_average_factor_set(envelope_configuration[i], 0.0);
+
         configure_sweeps(envelope_configuration[i], use_sensor_id[i]);
 
         handle[i] = createHandle(envelope_configuration[i]);
@@ -127,9 +133,10 @@ int main(void)
         double now_time = (double)(clock() - system_start_time) / CLOCKS_PER_SEC;
         printf("time: %f\r\n", now_time);
 
-        service_status[0] = execute_envelope_with_blocking_calls(0, handle[0]);
-        service_status[1] = execute_envelope_with_blocking_calls(1, handle[1]);
-        service_status[2] = execute_envelope_with_blocking_calls(2, handle[2]);
+        for (int i = 0; i < USE_SENSOR_NUM; i++)
+        {
+            service_status[i] = execute_envelope_with_blocking_calls(i, handle[i]);
+        }
 
         if (distance_to_object[0] != 0)
         {
@@ -208,7 +215,7 @@ acc_service_status_t execute_envelope_with_blocking_calls(int sensor_num, acc_se
     double measure_len = (double)envelope_metadata.actual_length_m;
     double measure_end_dis = (double)(measure_start_dis + measure_len);
     uint16_t data_len = envelope_metadata.data_length;
-    double index_to_meter = (double)(measure_len / data_len); // [m / point]
+    double index_to_meter = (double)(measure_len / REQ_DATA_NUM); // [m / point]
 
     if (inited != USE_SENSOR_NUM)
     {
@@ -219,7 +226,7 @@ acc_service_status_t execute_envelope_with_blocking_calls(int sensor_num, acc_se
         printf("分解能  : %f [m / point]\n", index_to_meter);
 
         // 1行目の記入
-        for (uint_fast16_t index = 0; index < data_len; index++)
+        for (uint_fast16_t index = 0; index < REQ_DATA_NUM; index++)
         {
             double now_depth = measure_start_dis + index * index_to_meter; // [m]
             fprintf(fp[sensor_num], ",%f", now_depth);
@@ -239,9 +246,16 @@ acc_service_status_t execute_envelope_with_blocking_calls(int sensor_num, acc_se
     if (service_status == ACC_SERVICE_STATUS_OK)
     {
         uint16_t data[2000];
+
         // センサから包絡線データを取得する
         // この関数は，次のスイープがセンサーから到着し，包絡線データが「data」配列にコピーされるまでブロックする
         service_status = acc_service_envelope_get_next(handle, data, data_len, &result_info);
+
+        // 取得したデータを間引く
+        for (int i = 0; i < REQ_DATA_NUM; i++)
+        {
+            processed_data[i] = data[(int)(data_len * i / REQ_DATA_NUM)];
+        }
 
         // 減衰補正
         // for (int i = 0; i < data_len; i++)
@@ -277,10 +291,10 @@ acc_service_status_t execute_envelope_with_blocking_calls(int sensor_num, acc_se
 
         if (service_status == ACC_SERVICE_STATUS_OK)
         {
-            for (uint_fast16_t index = 0; index < data_len; index++)
+            for (uint_fast16_t index = 0; index < REQ_DATA_NUM; index++)
             {
                 // printf("%6u", (unsigned int)(data[index]));
-                fprintf(fp[sensor_num], ",%u", data[index]);
+                fprintf(fp[sensor_num], ",%lf", processed_data[index]);
             }
 
             printf("\n");
@@ -312,7 +326,7 @@ void configure_sweeps(acc_service_configuration_t envelope_configuration, int id
     else
     {
         float start_m = 0.1f;
-        float length_m = 0.4f;
+        float length_m = 0.7f;
         float update_rate_hz = 100;
         acc_sweep_configuration_sensor_set(sweep_configuration, id);
         acc_sweep_configuration_requested_start_set(sweep_configuration, start_m);
