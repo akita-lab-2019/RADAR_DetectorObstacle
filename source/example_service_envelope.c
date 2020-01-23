@@ -23,8 +23,8 @@
 
 #define REQ_DATA_NUM 128                    // 取得したいデータ数
 #define USE_SENSOR_NUM 2                    // 使用するセンサの数
+#define period_sec 1.0 / 50.0               // 実行周期[s]
 int use_sensor_id[USE_SENSOR_NUM] = {1, 3}; // 使用するセンサのIDリスト
-const double period_sec = 0.005;            // 実行周期[s]
 
 double distance_to_object[3] = {0}; // 物体までの距離[m]
 int inited = 0;
@@ -44,7 +44,7 @@ FILE *fp_g;
 int main(void)
 {
     // Nucleoとの通信確立
-    int fd = serialOpen("/dev/ttyACM0", 9600);
+    int fd = serialOpen("/dev/ttyACM0", 115200);
     wiringPiSetup();
     fflush(stdout);
     if (fd < 0)
@@ -126,12 +126,7 @@ int main(void)
         loop_num++;
         count++;
 
-        // cls
-        printf("\033[2J");
-        printf("\033[0;0H");
-
         double now_time = (double)(clock() - system_start_time) / CLOCKS_PER_SEC;
-        printf("time: %f\r\n", now_time);
 
         for (int i = 0; i < USE_SENSOR_NUM; i++)
         {
@@ -154,21 +149,24 @@ int main(void)
             serialPutchar(fd, 0);
         }
 
-        int get_char = serialGetchar(fd);
-        if (get_char != -1)
-        {
-            printf("recive : %d\n", get_char);
-            fprintf(fp_g, "\n%f", now_time);
-            fprintf(fp_g, ",%d", get_char);
-        }
-        else
-        {
-            printf("no data\n");
-        }
+        // 加速度データの取得
+        int get_char;
+        int acc_data = 0;
+        get_char = serialGetchar(fd);
+        acc_data = get_char - 128;
+        fprintf(fp_g, "%.3f, %d\n", now_time, acc_data);
 
+        // ターミナルに表示
+        printf("\033[2J");
+        printf("\033[0;0H");
+        printf("tim: %.3f\r\n", now_time);
+        printf("dis: %.3f\n", distance_to_object[0]);
+        printf("acc: %d\n", acc_data);
+
+        // ループ時間が所望の周期になるように待機
         while (true)
         {
-            if ((double)((clock() - system_start_time) / CLOCKS_PER_SEC) > loop_num * period_sec)
+            if ((((double)clock() - system_start_time) / (double)CLOCKS_PER_SEC) > (double)loop_num * period_sec)
                 break;
         }
     }
@@ -282,11 +280,6 @@ acc_service_status_t execute_envelope_with_blocking_calls(int sensor_num, acc_se
         {
             // 強度が閾値より低いときは非検知扱いにする
             distance_to_object[sensor_num] = 0;
-        }
-
-        if (sensor_num == 0)
-        {
-            printf("[%f, %f]\n", max_data, distance_to_object[sensor_num]);
         }
 
         if (service_status == ACC_SERVICE_STATUS_OK)
